@@ -112,4 +112,51 @@ gpu-utils
 +-------------------------------+----------------------+----------------------+
 ```
 
+### 4. 单机运行，采用 ps + worker 架构，1 ps + 2 workers; 同步训练
 
+这里试试看同步训练，那么，在上一节的基础之上，修改代码如下，得到代码 tfdist_between_sync.py
+
+```
+-             train_op = grad_op.minimize(cross_entropy, global_step=global_step)
++             sync_op = tf.train.SyncReplicasOptimizer(grad_op, replicas_to_aggregate=len(worker_svrs),
++                                                      total_num_replicas=len(worker_svrs), use_locking=True)
++             train_op = sync_op.minimize(cross_entropy, global_step=global_step)
+
++     chief_queue_runner = sync_op.get_chief_queue_runner()
+
++         if FLAGS.task_index == 0:
++             sv.start_queue_runners(sess, [chief_queue_runner])
+
+
++         if FLAGS.task_index == 0:
++             sv.request_stop()
+```
+
+```
+nohup python tfdist_between_sync.py --job_name=ps --task_index=0 > ps.log 2>&1 &
+nohup python tfdist_between_sync.py --job_name=worker --task_index=0 > worker.log 2>&1 &
+nohup python tfdist_between_sync.py --job_name=worker --task_index=1 > worker1.log 2>&1 &
+```
+
+运行在 server1 上
+
+- worker0 和 worker1 几乎同时运行，两个 workers 的运行时间类似，每个 Epoch 运行 5.35 秒左右，和比上面一节差不多，分别使用 gpu0 和 gpu1
+- 运行之后，两个 workers 的准确率都只有 72%，不是很理想
+
+看到，虽然是同步训练，由于两个 workers 都运行在同一个机器上，故此并没有带来什么效率的损失
+
+然而，两个 workers 分别训练然后再把结果同步在一起取平均，虽然参数更新平滑了，但是更新次数比异步训练减少了一倍，故此和单机训练的结果差不多
+
+两个 workers 一共跑了 200 个 EPOCH，却只更新 100 次，感觉有点儿浪费啊，和双 gpus 单机跑类似
+
+gpu-utils
+
+```
+|===============================+======================+======================|
+|   0  GeForce GTX 1080    Off  | 00000000:01:00.0 Off |                  N/A |
+| 33%   52C    P2    39W / 180W |    521MiB /  8114MiB |      6%      Default |
++-------------------------------+----------------------+----------------------+
+|   1  GeForce GTX 1080    Off  | 00000000:02:00.0 Off |                  N/A |
+| 32%   49C    P2    41W / 180W |    521MiB /  8114MiB |      4%      Default |
++-------------------------------+----------------------+----------------------+
+```
