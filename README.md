@@ -160,3 +160,105 @@ gpu-utils
 | 32%   49C    P2    41W / 180W |    521MiB /  8114MiB |      4%      Default |
 +-------------------------------+----------------------+----------------------+
 ```
+
+### 5. 单机运行，采用 ps + worker 架构，2 ps + 2 workers; 异步训练
+
+```
+ps_svrs = ['localhost:2223', 'localhost:2224']
+worker_svrs = ['localhost:2222', 'localhost:2221']
+```
+
+```
+nohup python tfdist_between.py --job_name=ps --task_index=0 > ps.log 2>&1 &
+nohup python tfdist_between.py --job_name=ps --task_index=1 > ps1.log 2>&1 &
+nohup python tfdist_between.py --job_name=worker --task_index=0 > worker.log 2>&1 &
+nohup python tfdist_between.py --job_name=worker --task_index=1 > worker1.log 2>&1 &
+```
+
+运行在 server1 上
+
+- worker0 的第一个 Epoch 运行 9+ 秒，后面都是平均 6.6 秒不到的样子；worker1 第一个 Epoch 运行 37 秒 ... 后面 6.6 秒多一点儿的样子
+- 运行之后，两个 workers 的准确率都到 80%，原因是异步训练
+
+看到，双 ps 还是带来了一些效率上的代价，运行会变慢一些，首次运行还会做一些额外的处理工作
+
+如果模型不是很复杂，那么单 ps 就好了
+
+### 6. 单机运行，采用 ps + worker 架构，2 ps + 2 workers; 同步训练
+
+```
+ps_svrs = ['localhost:2223', 'localhost:2224']
+worker_svrs = ['localhost:2222', 'localhost:2221']
+```
+
+```
+nohup python tfdist_between_sync.py --job_name=ps --task_index=0 > ps.log 2>&1 &
+nohup python tfdist_between_sync.py --job_name=ps --task_index=1 > ps1.log 2>&1 &
+nohup python tfdist_between_sync.py --job_name=worker --task_index=0 > worker.log 2>&1 &
+nohup python tfdist_between_sync.py --job_name=worker --task_index=1 > worker1.log 2>&1 &
+```
+
+运行在 server1 上
+
+- worker0 的第一个 Epoch 运行 40 秒，后面都是平均 6.9 秒多的样子；worker1 第一个 Epoch 运行 38 秒，后面也是 6.9 秒多一点儿的样子
+- 运行之后，两个 workers 的准确率都到 72%，原因是同步训练，取两个 gpu 结果的平均之后再更新
+
+确认，2 个 ps 不会带来性能提升，反而带来效率降低，如果单个 ps 能够处理，不要水平扩展到多个 ps
+
+### 7. 分布式运行，采用 ps + worker 架构，1 ps + 2 workers; 异步训练
+
+```
+ps_svrs = ['server1:2224']
+worker_svrs = ['server1:2222', 'server2:2222']
+```
+就是说 ps 和 worker0 在 server1 上，worker1 在 server2 上
+
+```
+server 1:
+nohup python tfdist_between.py --job_name=ps --task_index=0 > ps.log 2>&1 &
+nohup python tfdist_between.py --job_name=worker --task_index=0 > worker.log 2>&1 &
+
+server 2:
+nohup python tfdist_between.py --job_name=worker --task_index=1 > worker1.log 2>&1 &
+```
+
+- server 1: worker0 的第一个 Epoch 运行 15.5 秒，后面都是平均 4.2 秒多的样子；
+- server 2: worker1 的第一个 Epoch 运行 37 秒，后面是 6.2 秒多一点儿的样子
+- 运行之后，worker0 的准确率为 78%，worker1 晚一些结束，准确率到了 80%
+
+看到，结果其实还是不错的，比单机的 1ps 2workers 的结果慢一些而已，但是实现了水平扩展
+
+### 8. 分布式运行，采用 ps + worker 架构，1 ps + 3 workers; 异步训练
+
+```
+ps_svrs = ['server1:2224']
+worker_svrs = ['server1:2222', 'server1:2223', 'server2:2222']
+```
+就是说 ps 和 worker0/worker1 在 server1 上，worker2 在 server2 上
+
+```
+server 1:
+nohup python tfdist_between.py --job_name=ps --task_index=0 > ps.log 2>&1 &
+nohup python tfdist_between.py --job_name=worker --task_index=0 > worker.log 2>&1 &
+nohup python tfdist_between.py --job_name=worker --task_index=1 > worker1.log 2>&1 &
+
+server 2:
+nohup python tfdist_between.py --job_name=worker --task_index=2 > worker2.log 2>&1 &
+```
+
+- server 1: worker0 的第一个 Epoch 运行 12 秒，后面都是平均 5.75 秒多的样子；使用 server1 gpu:0
+- server 1: worker1 的第一个 Epoch 运行 42 秒，后面是 5.85 秒多一点儿的样子，使用 server1 gpu:1
+- server 2: worker2 的第一个 Epoch 运行 37 秒，后面是 6.5 秒多一点儿的样子，使用 server2 gpu:0
+- 运行之后，worker0 的准确率为 82%，worker1 晚一些结束，准确率到了 83%，server 2 上的 worker2 更晚一些结束，准确率也是到 83%
+
+看到，结果其实很不错的，比单机的 1ps 2workers 的结果慢一些而已，但是实现了水平扩展，而且比 2 workers 提升了准确率
+
+### 9. 分布式运行 + 同步训练
+
+放弃，意义不是很大
+
+
+IN GRAPH 模式
+==============
+
+放弃，比起 BETWEEN GRAPH 模式，IN GRAPH 模式并没有在效率和效果上的提升；而且生产环境应该都是以 BETWEEN GRAPH 模式为主

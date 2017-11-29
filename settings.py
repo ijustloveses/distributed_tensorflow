@@ -1,4 +1,4 @@
 # encoding: utf-8
 
-ps_svrs = ['localhost:2223']
-worker_svrs = ['localhost:2222', 'localhost:2221']
+ps_svrs = ['10.88.104.31:2224']
+worker_svrs = ['10.88.104.31:2222', '10.88.104.31:2223', '10.88.102.119:2222']
